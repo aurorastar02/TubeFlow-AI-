@@ -1,5 +1,4 @@
-
-import { VideoMetadata } from "../types";
+import { VideoMetadata } from "../types.ts";
 
 export const fetchVideoMetadata = async (url: string): Promise<VideoMetadata> => {
   try {
@@ -10,8 +9,9 @@ export const fetchVideoMetadata = async (url: string): Promise<VideoMetadata> =>
     });
 
     if (!response.ok) {
-      const errorData = await response.json();
-      throw new Error(errorData.error || "無法從本地引擎獲取資訊");
+      const errorData = await response.json().catch(() => ({}));
+      // 如果後端給出具體錯誤（如影片不存在、不支援區域），直接拋出該訊息
+      throw new Error(errorData.error || `引擎錯誤: ${response.status} (請確認影片網址是否正確)`);
     }
 
     const data = await response.json();
@@ -23,8 +23,10 @@ export const fetchVideoMetadata = async (url: string): Promise<VideoMetadata> =>
       views: data.views || "0",
       availableQualities: data.availableQualities || ["360p", "720p", "1080p"]
     };
-  } catch (error) {
-    console.error("Error connecting to Python backend:", error);
+  } catch (error: any) {
+    if (error.name === 'TypeError' && error.message.includes('fetch')) {
+      throw new Error("無法連接到本地引擎 (請確認 Python 腳本是否已啟動並運行在 5000 端口)");
+    }
     throw error;
   }
 };
