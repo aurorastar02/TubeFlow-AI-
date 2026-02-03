@@ -12,9 +12,7 @@ import {
   ChevronDown,
   X,
   Copy,
-  RefreshCw,
   Zap,
-  ShieldCheck,
   Settings
 } from 'lucide-react';
 import { 
@@ -23,8 +21,8 @@ import {
   VideoQuality, 
   VideoMetadata, 
   DownloadTask 
-} from './types';
-import { fetchVideoMetadata } from './services/videoService';
+} from './types.ts';
+import { fetchVideoMetadata } from './services/videoService.ts';
 
 const App: React.FC = () => {
   const [url, setUrl] = useState('');
@@ -38,7 +36,6 @@ const App: React.FC = () => {
   const [isBackendConnected, setIsBackendConnected] = useState(false);
   const [showSetupModal, setShowSetupModal] = useState(false);
 
-  // 本地 Python 腳本 (純淨版)
   const pythonScript = `
 import os
 import yt_dlp
