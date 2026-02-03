@@ -1,8 +1,5 @@
 {
-  "name": "TubeFlow AI Downloader",
-  "description": "A high-performance, AI-enhanced YouTube downloader interface supporting MP3/MP4 conversion and quality selection.",
-  "requestFramePermissions": [
-    "camera",
-    "microphone"
-  ]
+  "name": "TubeFlow Downloader",
+  "description": "A high-performance YouTube downloader interface supporting MP3/MP4 conversion via local Python engine.",
+  "requestFramePermissions": []
 }
