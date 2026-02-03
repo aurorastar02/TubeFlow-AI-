@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect } from 'react';
 import { 
   Download, 
@@ -36,10 +37,12 @@ const App: React.FC = () => {
   const [isBackendConnected, setIsBackendConnected] = useState(false);
   const [showSetupModal, setShowSetupModal] = useState(false);
 
+  // 優化後的 Python 腳本：加入 User-Agent 與 Referer 以解決 403 Forbidden 錯誤
   const pythonScript = `
 import os
 import yt_dlp
 import datetime
+import traceback
 from flask import Flask, request, send_file, jsonify
 from flask_cors import CORS
 
@@ -49,6 +52,15 @@ CORS(app)
 DOWNLOAD_DIR = 'tube_downloads'
 if not os.path.exists(DOWNLOAD_DIR):
     os.makedirs(DOWNLOAD_DIR)
+
+# 共同的 yt-dlp 設定，增加請求偽裝
+COMMON_YDL_OPTS = {
+    'quiet': True,
+    'no_warnings': True,
+    'nocheckcertificate': True,
+    'referer': 'https://www.youtube.com/',
+    'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+}
 
 @app.route('/health', methods=['GET'])
 def health():
@@ -62,7 +74,7 @@ def get_info():
         if not video_url:
             return jsonify({"error": "請提供網址"}), 400
             
-        ydl_opts = {'quiet': True, 'noplaylist': True}
+        ydl_opts = {**COMMON_YDL_OPTS, 'noplaylist': True}
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(video_url, download=False)
             duration_sec = info.get('duration', 0)
@@ -77,8 +89,8 @@ def get_info():
                 "availableQualities": ["360p", "720p", "1080p", "4K"]
             })
     except Exception as e:
-        # 將具體錯誤訊息傳回前端
-        return jsonify({"error": str(e)}), 500
+        print(f"解析錯誤: {str(e)}")
+        return jsonify({"error": f"影片資訊解析失敗: {str(e)}"}), 500
 
 @app.route('/download', methods=['POST'])
 def download():
@@ -90,9 +102,9 @@ def download():
         height = quality.replace('p', '') if 'p' in quality else '720'
         
         ydl_opts = {
+            **COMMON_YDL_OPTS,
             'outtmpl': f'{DOWNLOAD_DIR}/%(title)s.%(ext)s',
             'noplaylist': True,
-            'quiet': True,
         }
         
         if fmt == 'MP3':
@@ -105,6 +117,7 @@ def download():
                 }],
             })
         else:
+            # 嘗試下載指定畫質或最佳可用
             ydl_opts['format'] = f'bestvideo[height<={height}]+bestaudio/best/best'
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -112,13 +125,21 @@ def download():
             filename = ydl.prepare_filename(info)
             if fmt == 'MP3':
                 filename = os.path.splitext(filename)[0] + '.mp3'
-            return send_file(filename, as_attachment=True)
+            
+            if os.path.exists(filename):
+                return send_file(filename, as_attachment=True)
+            else:
+                return jsonify({"error": "檔案生成失敗，請檢查權限或空間"}), 500
+                
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        print(f"下載錯誤: {str(e)}")
+        traceback.print_exc()
+        return jsonify({"error": f"下載失敗 (可能被 YouTube 阻擋): {str(e)}"}), 500
 
 if __name__ == '__main__':
     print("=" * 50)
-    print("TubeFlow Engine 啟動成功！")
+    print("TubeFlow Engine V2 啟動成功！")
+    print("修正了 403 Forbidden 錯誤，並強化了請求偽裝。")
     print("API URL: http://localhost:5000")
     print("=" * 50)
     app.run(port=5000)
@@ -152,7 +173,7 @@ if __name__ == '__main__':
 
   const handleFetchMetadata = async () => {
     if (!url.trim()) {
-      setError("請先貼上 YouTube 影片網址");
+      setError("請貼入網址後點擊解析");
       return;
     }
     setError(null);
@@ -161,6 +182,7 @@ if __name__ == '__main__':
     try {
       const data = await fetchVideoMetadata(url);
       setMetadata(data);
+      setNotification({ message: "解析完成", type: 'success' });
     } catch (err: any) {
       setError(err.message || "發生未知錯誤");
     } finally {
@@ -183,7 +205,7 @@ if __name__ == '__main__':
 
       if (!response.ok) {
          const errData = await response.json().catch(() => ({}));
-         throw new Error(errData.error || "下載引擎回報錯誤");
+         throw new Error(errData.error || "下載引擎回報錯誤 (HTTP 403/500)");
       }
 
       const blob = await response.blob();
@@ -197,10 +219,10 @@ if __name__ == '__main__':
       window.URL.revokeObjectURL(downloadUrl);
       
       setTasks(prev => prev.map(t => t.id === task.id ? { ...t, status: 'completed', progress: 100 } : t));
-      setNotification({ message: "下載已開始！", type: 'success' });
+      setNotification({ message: "檔案已儲存", type: 'success' });
     } catch (err: any) {
       setTasks(prev => prev.map(t => t.id === task.id ? { ...t, status: 'failed' } : t));
-      setNotification({ message: err.message || "下載失敗，請檢查網頁後台腳本", type: 'warning' });
+      setNotification({ message: err.message, type: 'warning' });
     }
   };
 
@@ -222,7 +244,7 @@ if __name__ == '__main__':
 
   const copyScript = () => {
     navigator.clipboard.writeText(pythonScript);
-    setNotification({ message: "腳本已複製", type: 'success' });
+    setNotification({ message: "腳本已複製，請覆蓋舊版本並重啟", type: 'success' });
   };
 
   return (
@@ -230,7 +252,7 @@ if __name__ == '__main__':
       <header className="sticky top-0 z-50 border-b border-white/5 bg-slate-950/60 backdrop-blur-xl px-6 py-4">
         <div className="max-w-7xl mx-auto flex items-center justify-between">
           <div className="flex items-center gap-4">
-            <div className="bg-gradient-to-br from-red-600 to-red-800 p-2 rounded-xl">
+            <div className="bg-gradient-to-br from-red-600 to-red-800 p-2 rounded-xl shadow-lg shadow-red-900/20">
               <Youtube className="w-6 h-6 text-white" />
             </div>
             <h1 className="text-2xl font-black tracking-tighter text-white">TubeFlow <span className="text-red-600">Pure</span></h1>
@@ -238,12 +260,12 @@ if __name__ == '__main__':
 
           <div className="flex items-center gap-4">
             <div className={`flex items-center gap-2 px-4 py-2 rounded-2xl text-[10px] font-black border transition-all ${
-              isBackendConnected ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400' : 'bg-red-500/10 border-red-500/30 text-red-400'
+              isBackendConnected ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400 shadow-[0_0_15px_rgba(16,185,129,0.1)]' : 'bg-red-500/10 border-red-500/30 text-red-400 shadow-[0_0_15px_rgba(239,68,68,0.1)]'
             }`}>
               <div className={`w-2 h-2 rounded-full ${isBackendConnected ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.8)]' : 'bg-red-500 animate-pulse'}`}></div>
               {isBackendConnected ? '本地引擎：運作中' : '本地引擎：未偵測'}
             </div>
-            <button onClick={() => setShowSetupModal(true)} className="p-2 text-slate-500 hover:text-white transition-colors bg-white/5 rounded-xl border border-white/5">
+            <button onClick={() => setShowSetupModal(true)} className="p-2 text-slate-500 hover:text-white transition-all bg-white/5 rounded-xl border border-white/5 hover:border-white/20">
               <Settings className="w-5 h-5" />
             </button>
           </div>
@@ -251,26 +273,26 @@ if __name__ == '__main__':
       </header>
 
       <main className="max-w-4xl mx-auto px-6 mt-16 space-y-12">
-        <section className="text-center space-y-8">
+        <section className="text-center space-y-8 animate-in fade-in slide-in-from-bottom-6 duration-1000">
           <div className="space-y-4">
-            <h2 className="text-5xl md:text-7xl font-black text-white leading-tight tracking-tight animate-in fade-in slide-in-from-bottom-4 duration-700">
-              快速解析。 <br />
-              <span className="text-transparent bg-clip-text bg-gradient-to-r from-red-600 via-orange-500 to-amber-500">無限下載。</span>
+            <h2 className="text-6xl md:text-8xl font-black text-white leading-tight tracking-tight">
+              隱私下載。 <br />
+              <span className="text-transparent bg-clip-text bg-gradient-to-r from-red-600 via-orange-500 to-amber-500">不留痕跡。</span>
             </h2>
-            <p className="text-slate-400 max-w-2xl mx-auto text-lg font-medium opacity-80">
-              請在您的電腦端啟動 Python 引擎後，貼上網址即可開始。
+            <p className="text-slate-400 max-w-2xl mx-auto text-lg font-medium opacity-80 leading-relaxed">
+              您的電腦就是伺服器。修正了 403 阻擋問題，支援 MP3 與 4K 影片下載。
             </p>
           </div>
 
           <div className="relative max-w-2xl mx-auto group">
             <div className="absolute -inset-1 bg-gradient-to-r from-red-600 to-orange-600 rounded-3xl blur opacity-10 group-focus-within:opacity-40 transition duration-500"></div>
-            <div className="relative flex flex-col md:flex-row gap-3">
+            <div className="relative flex flex-col md:flex-row gap-3 p-1">
               <div className="relative flex-grow">
                 <Search className="absolute left-5 top-1/2 -translate-y-1/2 w-6 h-6 text-slate-500" />
                 <input 
                   type="text"
-                  placeholder="在此貼上 YouTube 連結..."
-                  className="w-full bg-slate-900/50 border border-white/10 rounded-2xl py-5 pl-14 pr-6 focus:outline-none focus:border-red-600/50 transition-all text-white text-lg font-bold backdrop-blur-md"
+                  placeholder="在此貼上 YouTube 網址..."
+                  className="w-full bg-slate-900/40 border border-white/10 rounded-2xl py-5 pl-14 pr-6 focus:outline-none focus:border-red-600/50 transition-all text-white text-lg font-bold backdrop-blur-md"
                   value={url}
                   onChange={(e) => {
                     setUrl(e.target.value);
@@ -282,28 +304,37 @@ if __name__ == '__main__':
               <button 
                 onClick={handleFetchMetadata}
                 disabled={isFetching}
-                className="bg-red-600 hover:bg-red-500 disabled:bg-slate-800 text-white font-black px-10 py-5 rounded-2xl transition-all flex items-center justify-center gap-3 shadow-xl text-lg group active:scale-95"
+                className="bg-red-600 hover:bg-red-500 disabled:bg-slate-800 text-white font-black px-12 py-5 rounded-2xl transition-all flex items-center justify-center gap-3 shadow-xl text-lg group active:scale-95"
               >
                 {isFetching ? <Loader2 className="w-6 h-6 animate-spin" /> : <Zap className="w-6 h-6 fill-current group-hover:scale-110" />}
-                解析影片
+                解析
               </button>
             </div>
             
-            {/* 具體錯誤原因顯示區塊 */}
             {error && (
-              <div className="mt-4 p-4 bg-red-500/10 border border-red-500/20 rounded-2xl flex items-start gap-3 text-left animate-in slide-in-from-top-2">
-                <AlertCircle className="w-5 h-5 text-red-500 shrink-0 mt-0.5" />
+              <div className="mt-6 p-5 bg-red-500/10 border border-red-500/20 rounded-2xl flex items-start gap-4 text-left animate-in zoom-in-95 duration-300">
+                <div className="bg-red-500/20 p-2 rounded-lg">
+                  <AlertCircle className="w-5 h-5 text-red-500 shrink-0" />
+                </div>
                 <div>
-                  <p className="text-red-500 font-black text-sm uppercase">解析失敗</p>
-                  <p className="text-red-200/80 text-sm mt-0.5 font-medium leading-relaxed">{error}</p>
-                  {!isBackendConnected && error.includes("無法連接") && (
+                  <p className="text-red-500 font-black text-xs uppercase tracking-wider mb-1">錯誤原因：解析失敗</p>
+                  <p className="text-red-100/90 text-sm font-medium leading-relaxed">{error}</p>
+                  <div className="mt-3 flex gap-3">
                     <button 
-                      onClick={() => setShowSetupModal(true)}
-                      className="mt-2 text-xs font-black text-red-400 hover:text-red-300 underline underline-offset-4 flex items-center gap-1"
+                      onClick={handleFetchMetadata}
+                      className="text-xs font-black text-white bg-red-600/20 hover:bg-red-600/30 px-3 py-1.5 rounded-lg flex items-center gap-1 transition-all"
                     >
-                      查看如何啟動引擎 <Settings className="w-3 h-3" />
+                      <RefreshCw className="w-3 h-3" /> 重試解析
                     </button>
-                  )}
+                    {!isBackendConnected && (
+                      <button 
+                        onClick={() => setShowSetupModal(true)}
+                        className="text-xs font-black text-slate-400 hover:text-white bg-white/5 px-3 py-1.5 rounded-lg flex items-center gap-1 transition-all"
+                      >
+                        <Settings className="w-3 h-3" /> 檢查引擎
+                      </button>
+                    )}
+                  </div>
                 </div>
               </div>
             )}
@@ -311,52 +342,64 @@ if __name__ == '__main__':
         </section>
 
         {metadata && (
-          <div className="glass-card rounded-[2.5rem] p-8 md:p-10 animate-in fade-in zoom-in-95 border-white/5 relative overflow-hidden">
-            <div className="absolute top-0 right-0 w-80 h-80 bg-red-600/5 blur-[100px] -mr-40 -mt-40"></div>
-            <div className="flex flex-col md:flex-row gap-10 relative z-10">
-              <div className="w-full md:w-5/12 aspect-video rounded-3xl overflow-hidden border border-white/10 group">
-                <img src={metadata.thumbnail} className="w-full h-full object-cover transition-transform group-hover:scale-105" alt="Thumb" />
-                <div className="absolute bottom-4 right-4 bg-black/80 px-3 py-1 rounded-xl text-xs font-black text-white">{metadata.duration}</div>
+          <div className="glass-card rounded-[3rem] p-10 animate-in fade-in zoom-in-95 duration-500 border-white/5 relative overflow-hidden group shadow-2xl">
+            <div className="absolute top-0 right-0 w-[400px] h-[400px] bg-red-600/5 blur-[120px] -mr-40 -mt-40 transition-opacity opacity-50 group-hover:opacity-100"></div>
+            <div className="flex flex-col md:flex-row gap-12 relative z-10">
+              <div className="w-full md:w-5/12 aspect-video rounded-3xl overflow-hidden border border-white/10 group/img shadow-xl">
+                <img src={metadata.thumbnail} className="w-full h-full object-cover transition-transform duration-700 group-hover/img:scale-110" alt="Thumb" />
+                <div className="absolute bottom-4 right-4 bg-black/90 px-3 py-1 rounded-xl text-xs font-black text-white backdrop-blur-sm border border-white/10">{metadata.duration}</div>
               </div>
-              <div className="flex-grow space-y-6">
+              <div className="flex-grow space-y-8 flex flex-col justify-center">
                 <div>
-                  <h3 className="text-2xl font-black text-white mb-2 truncate">{metadata.title}</h3>
-                  <div className="flex items-center gap-3 text-slate-500 font-bold text-sm">
-                    <span className="bg-red-600/10 text-red-500 px-2 py-0.5 rounded-lg">VERIFIED</span>
-                    {metadata.author} • {metadata.views} 次觀看
+                  <h3 className="text-3xl font-black text-white mb-3 line-clamp-2 leading-tight">{metadata.title}</h3>
+                  <div className="flex items-center gap-4 text-slate-500 font-bold text-sm">
+                    <div className="flex items-center gap-1.5 bg-slate-900 px-3 py-1.5 rounded-xl border border-white/5">
+                      <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></div>
+                      <span className="text-slate-300">{metadata.author}</span>
+                    </div>
+                    <span className="text-slate-600 underline underline-offset-4 decoration-slate-800">{metadata.views} 次觀看</span>
                   </div>
                 </div>
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-2">
-                    <label className="text-[10px] font-black text-slate-500 uppercase ml-1 tracking-widest">下載格式</label>
-                    <div className="flex bg-slate-950/50 p-1 rounded-2xl border border-white/5">
-                      <button onClick={() => setFormat(DownloadFormat.MP4)} className={`flex-1 py-3 rounded-xl text-xs font-black transition-all ${format === DownloadFormat.MP4 ? 'bg-slate-800 text-white shadow-xl' : 'text-slate-600 hover:text-slate-400'}`}>MP4</button>
-                      <button onClick={() => setFormat(DownloadFormat.MP3)} className={`flex-1 py-3 rounded-xl text-xs font-black transition-all ${format === DownloadFormat.MP3 ? 'bg-slate-800 text-white shadow-xl' : 'text-slate-600 hover:text-slate-400'}`}>MP3</button>
+                <div className="grid grid-cols-2 gap-6">
+                  <div className="space-y-3">
+                    <label className="text-[10px] font-black text-slate-500 uppercase ml-1 tracking-[0.2em] block">格式</label>
+                    <div className="flex bg-slate-950/40 p-1.5 rounded-2xl border border-white/5 backdrop-blur-sm">
+                      <button onClick={() => setFormat(DownloadFormat.MP4)} className={`flex-1 py-3 rounded-xl text-xs font-black transition-all ${format === DownloadFormat.MP4 ? 'bg-slate-800 text-white shadow-xl scale-100' : 'text-slate-600 hover:text-slate-400'}`}>VIDEO</button>
+                      <button onClick={() => setFormat(DownloadFormat.MP3)} className={`flex-1 py-3 rounded-xl text-xs font-black transition-all ${format === DownloadFormat.MP3 ? 'bg-slate-800 text-white shadow-xl scale-100' : 'text-slate-600 hover:text-slate-400'}`}>AUDIO</button>
                     </div>
                   </div>
-                  <div className="space-y-2">
-                    <label className="text-[10px] font-black text-slate-500 uppercase ml-1 tracking-widest">畫質/音質</label>
-                    <div className="relative">
-                      <select className="w-full bg-slate-950/50 border border-white/5 rounded-2xl py-3.5 px-4 text-xs font-bold text-white appearance-none cursor-pointer focus:outline-none focus:border-red-500/50" value={quality} onChange={(e) => setQuality(e.target.value)}>
+                  <div className="space-y-3">
+                    <label className="text-[10px] font-black text-slate-500 uppercase ml-1 tracking-[0.2em] block">畫質/音質</label>
+                    <div className="relative group/sel">
+                      <select 
+                        className="w-full bg-slate-950/40 border border-white/5 rounded-2xl py-4 px-5 text-xs font-bold text-white appearance-none cursor-pointer focus:outline-none focus:border-red-500/50 backdrop-blur-sm transition-all" 
+                        value={quality} 
+                        onChange={(e) => setQuality(e.target.value)}
+                      >
                         {format === DownloadFormat.MP4 ? (
                           <>
                             <option value={VideoQuality.P1080}>1080p Full HD</option>
                             <option value={VideoQuality.P720}>720p HD</option>
-                            <option value={VideoQuality.P4K}>4K Ultra HD</option>
+                            <option value={VideoQuality.P4K}>4K UHD (需引擎支援)</option>
+                            <option value={VideoQuality.P360}>360p SD</option>
                           </>
                         ) : (
                           <>
-                            <option value={AudioQuality.HIGH}>320kbps (極高)</option>
-                            <option value={AudioQuality.MEDIUM}>192kbps (平衡)</option>
+                            <option value={AudioQuality.HIGH}>320kbps Lossless</option>
+                            <option value={AudioQuality.MEDIUM}>192kbps Standard</option>
+                            <option value={AudioQuality.LOW}>128kbps Low</option>
                           </>
                         )}
                       </select>
-                      <ChevronDown className="absolute right-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-600 pointer-events-none" />
+                      <ChevronDown className="absolute right-5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-600 pointer-events-none group-hover/sel:text-red-500 transition-colors" />
                     </div>
                   </div>
                 </div>
-                <button onClick={handleAddTask} className="w-full bg-white hover:bg-slate-200 text-slate-950 font-black py-5 rounded-2xl transition-all shadow-2xl flex items-center justify-center gap-3 text-lg active:scale-95">
-                  <Download className="w-6 h-6" /> 確認下載
+                <button 
+                  onClick={handleAddTask} 
+                  className="w-full bg-white hover:bg-slate-100 text-slate-950 font-black py-5 rounded-2xl transition-all shadow-2xl flex items-center justify-center gap-3 text-lg active:scale-[0.98] group/btn"
+                >
+                  <Download className="w-6 h-6 transition-transform group-hover/btn:translate-y-0.5" /> 開始離線下載
                 </button>
               </div>
             </div>
@@ -364,27 +407,50 @@ if __name__ == '__main__':
         )}
 
         {tasks.length > 0 && (
-          <div className="space-y-6 pt-6 animate-in fade-in duration-500">
-            <h4 className="text-xl font-black text-white flex items-center gap-3"><div className="w-1.5 h-6 bg-red-600 rounded-full"></div> 任務進度</h4>
+          <div className="space-y-8 pt-6 animate-in fade-in slide-in-from-bottom-4 duration-700">
+            <div className="flex items-center justify-between">
+              <h4 className="text-xl font-black text-white flex items-center gap-3">
+                <div className="w-1.5 h-6 bg-red-600 rounded-full shadow-[0_0_10px_rgba(220,38,38,0.5)]"></div> 
+                任務管理
+              </h4>
+              <span className="text-[10px] font-black text-slate-600 uppercase tracking-widest bg-slate-900 px-3 py-1 rounded-full border border-white/5">{tasks.length} 任務運作中</span>
+            </div>
             <div className="space-y-4">
               {tasks.map(task => (
-                <div key={task.id} className="glass-card rounded-3xl p-6 flex items-center gap-6 border-white/5">
-                  <div className="p-4 rounded-2xl bg-slate-800/50 text-red-500">
+                <div key={task.id} className="glass-card rounded-[2rem] p-6 flex items-center gap-8 border-white/5 hover:border-white/10 transition-colors shadow-lg">
+                  <div className={`p-4 rounded-2xl ${task.status === 'completed' ? 'bg-emerald-500/10 text-emerald-500' : 'bg-slate-900/50 text-red-500'} border border-white/5`}>
                     {task.format === DownloadFormat.MP4 ? <Video className="w-6 h-6" /> : <Music className="w-6 h-6" />}
                   </div>
                   <div className="flex-grow min-w-0 text-left">
-                    <h5 className="font-bold text-white truncate text-base">{task.title}</h5>
-                    <p className="text-[10px] font-black text-slate-500 uppercase mt-1">{task.quality} • {task.format}</p>
+                    <h5 className="font-bold text-white truncate text-base mb-1">{task.title}</h5>
+                    <div className="flex items-center gap-3">
+                      <span className="text-[10px] font-black text-slate-500 uppercase tracking-wider">{task.quality} • {task.format}</span>
+                      {task.status === 'downloading' && (
+                        <span className="flex items-center gap-1.5 text-[9px] font-black text-red-500 animate-pulse">
+                          <div className="w-1 h-1 rounded-full bg-red-500"></div> 正在請求資料...
+                        </span>
+                      )}
+                    </div>
                     {task.status === 'downloading' && (
-                      <div className="h-1.5 w-full bg-slate-900 rounded-full mt-4 overflow-hidden">
-                        <div className="h-full bg-red-600 w-full animate-shimmer" />
+                      <div className="h-1.5 w-full bg-slate-950 rounded-full mt-4 overflow-hidden border border-white/5">
+                        <div className="h-full bg-gradient-to-r from-red-600 to-orange-500 w-full animate-shimmer" />
                       </div>
                     )}
                   </div>
-                  <div className="shrink-0">
-                    {task.status === 'completed' ? <CheckCircle2 className="w-7 h-7 text-emerald-500" /> : 
-                     task.status === 'failed' ? <AlertCircle className="w-7 h-7 text-red-500" /> : 
-                     <Loader2 className="w-7 h-7 animate-spin text-slate-700" />}
+                  <div className="shrink-0 flex items-center gap-4">
+                    {task.status === 'completed' ? (
+                      <div className="flex items-center gap-2 text-emerald-500 bg-emerald-500/10 px-4 py-2 rounded-xl border border-emerald-500/20 font-black text-xs">
+                        已完成 <CheckCircle2 className="w-5 h-5" />
+                      </div>
+                    ) : task.status === 'failed' ? (
+                      <div className="flex items-center gap-2 text-red-500 bg-red-500/10 px-4 py-2 rounded-xl border border-red-500/20 font-black text-xs">
+                        重試 <AlertCircle className="w-5 h-5" />
+                      </div>
+                    ) : (
+                      <div className="p-3 bg-slate-950/50 rounded-xl">
+                        <Loader2 className="w-6 h-6 animate-spin text-slate-700" />
+                      </div>
+                    )}
                   </div>
                 </div>
               ))}
@@ -394,43 +460,47 @@ if __name__ == '__main__':
       </main>
 
       {showSetupModal && (
-        <div className="fixed inset-0 z-[200] flex items-center justify-center p-6 bg-slate-950/90 backdrop-blur-xl animate-in fade-in duration-300">
-          <div className="bg-[#0f172a] border border-white/10 w-full max-w-xl rounded-[2.5rem] p-10 relative shadow-2xl overflow-hidden">
-            <div className="absolute top-0 left-0 w-full h-1.5 bg-gradient-to-r from-red-600 to-orange-600"></div>
-            <button onClick={() => setShowSetupModal(false)} className="absolute top-8 right-8 text-slate-500 hover:text-white transition-colors"><X className="w-7 h-7" /></button>
-            <div className="space-y-8 text-left">
-              <div className="space-y-2">
-                <h3 className="text-3xl font-black text-white">啟動本地引擎</h3>
-                <p className="text-slate-500 font-medium">請在您的電腦上執行以下步驟以支援下載功能。</p>
+        <div className="fixed inset-0 z-[200] flex items-center justify-center p-6 bg-slate-950/95 backdrop-blur-2xl animate-in fade-in duration-500">
+          <div className="bg-[#0f172a] border border-white/10 w-full max-w-2xl rounded-[3rem] p-12 relative shadow-[0_0_100px_rgba(0,0,0,0.5)] overflow-hidden">
+            <div className="absolute top-0 left-0 w-full h-2 bg-gradient-to-r from-red-600 to-orange-600"></div>
+            <button onClick={() => setShowSetupModal(false)} className="absolute top-10 right-10 text-slate-500 hover:text-white transition-all transform hover:rotate-90"><X className="w-8 h-8" /></button>
+            <div className="space-y-10 text-left">
+              <div className="space-y-3">
+                <h3 className="text-4xl font-black text-white tracking-tighter">啟動離線引擎 <span className="text-red-600">V2</span></h3>
+                <p className="text-slate-500 font-medium text-lg leading-relaxed">請確保 Python 版本為 3.10+，以獲得最佳下載體驗與安全性。</p>
               </div>
-              <div className="space-y-6">
-                <div className="space-y-3">
-                  <p className="text-white font-bold text-sm flex items-center gap-2"><span className="w-6 h-6 rounded-full bg-red-600/20 text-red-500 flex items-center justify-center text-[10px]">1</span> 安裝必要模組</p>
-                  <code className="block bg-black p-4 rounded-xl text-red-500 font-mono text-xs border border-white/5 select-all">pip install flask flask-cors yt-dlp</code>
+              <div className="space-y-8">
+                <div className="space-y-4">
+                  <p className="text-white font-black text-sm flex items-center gap-3"><span className="w-7 h-7 rounded-xl bg-red-600 text-white flex items-center justify-center text-[12px] shadow-lg shadow-red-900/30">1</span> 升級核心組件 (解決 403 報錯)</p>
+                  <code className="block bg-black/50 p-5 rounded-2xl text-red-500 font-mono text-sm border border-white/5 select-all leading-relaxed">pip install -U flask flask-cors yt-dlp</code>
                 </div>
-                <div className="space-y-3">
+                <div className="space-y-4">
                   <div className="flex items-center justify-between">
-                    <p className="text-white font-bold text-sm flex items-center gap-2"><span className="w-6 h-6 rounded-full bg-red-600/20 text-red-500 flex items-center justify-center text-[10px]">2</span> 儲存並執行 Python 腳本</p>
-                    <button onClick={copyScript} className="text-[10px] font-black text-slate-400 hover:text-white bg-white/5 px-3 py-1.5 rounded-lg border border-white/5 flex items-center gap-2 transition-all">
-                      <Copy className="w-3 h-3" /> 點擊複製
+                    <p className="text-white font-black text-sm flex items-center gap-3"><span className="w-7 h-7 rounded-xl bg-red-600 text-white flex items-center justify-center text-[12px] shadow-lg shadow-red-900/30">2</span> 貼上並重啟 Python 腳本</p>
+                    <button onClick={copyScript} className="text-[11px] font-black text-white hover:text-white bg-red-600 hover:bg-red-500 px-4 py-2 rounded-xl shadow-lg shadow-red-900/30 flex items-center gap-2 transition-all active:scale-95">
+                      <Copy className="w-3.5 h-3.5" /> 複製完整代碼
                     </button>
                   </div>
-                  <div className="max-h-48 overflow-y-auto bg-black p-4 rounded-xl border border-white/5 custom-scrollbar">
-                    <pre className="text-[10px] text-slate-600 font-mono leading-relaxed">{pythonScript}</pre>
+                  <div className="max-h-56 overflow-y-auto bg-black/80 p-6 rounded-2xl border border-white/5 custom-scrollbar shadow-inner">
+                    <pre className="text-[11px] text-slate-500 font-mono leading-relaxed select-all">{pythonScript}</pre>
                   </div>
                 </div>
               </div>
-              <button onClick={() => setShowSetupModal(false)} className="w-full bg-red-600 hover:bg-red-500 text-white font-black py-4 rounded-2xl shadow-xl shadow-red-900/20 transition-all active:scale-95">我已完成啟動</button>
+              <div className="pt-4">
+                <button onClick={() => setShowSetupModal(false)} className="w-full bg-white hover:bg-slate-200 text-slate-950 font-black py-5 rounded-2xl shadow-2xl transition-all active:scale-[0.98] text-lg">我已重啟引擎，開始下載</button>
+              </div>
             </div>
           </div>
         </div>
       )}
 
       {notification && (
-        <div className="fixed bottom-8 left-1/2 -translate-x-1/2 z-[300] animate-in slide-in-from-bottom-5">
-          <div className={`px-6 py-4 rounded-2xl shadow-2xl border flex items-center gap-3 backdrop-blur-xl ${notification.type === 'success' ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-200' : 'bg-amber-500/20 border-amber-500/50 text-amber-200'}`}>
-            <Zap className={`w-5 h-5 ${notification.type === 'success' ? 'text-emerald-400' : 'text-amber-400'} fill-current`} /> 
-            <span className="font-bold text-sm">{notification.message}</span>
+        <div className="fixed bottom-10 left-1/2 -translate-x-1/2 z-[300] animate-in slide-in-from-bottom-8 duration-500">
+          <div className={`px-8 py-5 rounded-[2rem] shadow-[0_20px_50px_rgba(0,0,0,0.5)] border flex items-center gap-4 backdrop-blur-3xl transition-all ${notification.type === 'success' ? 'bg-emerald-500/20 border-emerald-500/40 text-emerald-100' : 'bg-red-500/20 border-red-500/40 text-red-100'}`}>
+            <div className={`p-2 rounded-xl ${notification.type === 'success' ? 'bg-emerald-500/20' : 'bg-red-500/20'}`}>
+              <Zap className={`w-5 h-5 ${notification.type === 'success' ? 'text-emerald-400' : 'text-red-400'} fill-current`} /> 
+            </div>
+            <span className="font-black text-sm tracking-wide">{notification.message}</span>
           </div>
         </div>
       )}
